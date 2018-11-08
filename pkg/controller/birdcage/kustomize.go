@@ -3,6 +3,7 @@ package birdcage
 import (
 	"bytes"
 	"fmt"
+	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/kustomize/k8sdeps"
 	"sigs.k8s.io/kustomize/pkg/factory"
@@ -44,28 +45,22 @@ func NewKustomizeHelper(serializer runtime.Serializer) *KustomizeHelper {
 	}
 }
 
-func (k *KustomizeHelper) Patch(src runtime.Object, patch runtime.Object) (runtime.Object, error) {
-	fileSystem := fs.MakeFakeFS()
-
+func (k *KustomizeHelper) Patch(src *appsv1.Deployment, patch []byte) (*appsv1.Deployment, error) {
 	rawInput, err := encodeObject(k.Serializer, src)
 	if err != nil {
 		return nil, err
 	}
-	rawPatch, err := encodeObject(k.Serializer, patch)
-	if err != nil {
-		return nil, err
-	}
-
 	k.FileSystem.WriteFile(inputFilename, rawInput)
-	k.FileSystem.WriteFile(patchFilename, rawPatch)
 
-	ldr, err := loader.NewLoader("/", fileSystem)
+	k.FileSystem.WriteFile(patchFilename, patch)
+
+	ldr, err := loader.NewLoader("/", k.FileSystem)
 	if err != nil {
 		return nil, err
 	}
 	defer ldr.Cleanup()
 
-	kt, err := target.NewKustTarget(ldr, fileSystem, k.Factory.ResmapF, k.Factory.TransformerF, k.TransformerConfig)
+	kt, err := target.NewKustTarget(ldr, k.FileSystem, k.Factory.ResmapF, k.Factory.TransformerF, k.TransformerConfig)
 	if err != nil {
 		return nil, err
 	}
@@ -80,11 +75,12 @@ func (k *KustomizeHelper) Patch(src runtime.Object, patch runtime.Object) (runti
 	}
 
 	gvk := src.GetObjectKind().GroupVersionKind()
-	out, _, err := k.Serializer.Decode(rawOut, &gvk, nil)
+	out := appsv1.Deployment{}
+	_, _, err = k.Serializer.Decode(rawOut, &gvk, &out)
 	if err != nil {
 		return nil, err
 	}
-	return out, nil
+	return &out, nil
 }
 
 func encodeObject(codec runtime.Encoder, obj runtime.Object) ([]byte, error) {

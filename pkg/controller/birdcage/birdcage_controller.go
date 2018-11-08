@@ -20,17 +20,16 @@ import (
 	"context"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"reflect"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -95,7 +94,7 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 	return &ReconcileBirdcage{
 		Client:    mgr.GetClient(),
 		scheme:    scheme,
-		recorder: mgr.GetRecorder("birdcages"),
+		recorder:  mgr.GetRecorder("birdcages"),
 		kustomize: NewKustomizeHelper(json.NewYAMLSerializer(json.DefaultMetaFactory, scheme, scheme)),
 	}
 }
@@ -142,8 +141,8 @@ var _ reconcile.Reconciler = &ReconcileBirdcage{}
 // ReconcileBirdcage reconciles a Birdcage object
 type ReconcileBirdcage struct {
 	client.Client
-	scheme   *runtime.Scheme
-	recorder record.EventRecorder
+	scheme    *runtime.Scheme
+	recorder  record.EventRecorder
 	kustomize *KustomizeHelper
 }
 
@@ -197,10 +196,18 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	// Create or update our canary/target deployment
-	target := newCanaryDeployment(instance, watchedSource)
-
-	// TODO patch target with kustomize here
+	watchedSource.Kind = "Deployment"
+	watchedSource.APIVersion = "apps/v1"
+	target, err := r.kustomize.Patch(watchedSource, []byte(instance.Spec.TargetObject.Patch))
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+	target.SetName(instance.Spec.TargetObject.Name)
+	target.SetNamespace(instance.Spec.TargetObject.Namespace)
+	target.Status.Reset()
+	target.CreationTimestamp.Reset()
+	target.ResourceVersion = ""
+	target.UID = ""
 
 	// Target deployment is owned by our birdcage object
 	if err := controllerutil.SetControllerReference(instance, target, r.scheme); err != nil {
@@ -233,28 +240,4 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 	}
 
 	return reconcile.Result{}, nil
-}
-
-func newCanaryDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.Deployment) *appsv1.Deployment {
-	targetObject := &birdcage.Spec.TargetObject
-	sourceSpec := &source.Spec
-	var nbReplicas int32 = 1
-
-	res := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      targetObject.Name,
-			Namespace: targetObject.Namespace,
-		},
-		Spec: appsv1.DeploymentSpec{
-			// TODO: make this configurable with the targetObject
-			Replicas: &nbReplicas,
-			Template: *sourceSpec.Template.DeepCopy(),
-		},
-	}
-	// Overwrite labels in template as well
-	res.Spec.Template.Labels = targetObject.Labels
-	res.Spec.Selector = &metav1.LabelSelector{
-		MatchLabels: targetObject.Labels,
-	}
-	return res
 }

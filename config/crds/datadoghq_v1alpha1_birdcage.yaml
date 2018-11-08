@@ -36,17 +36,18 @@ spec:
               type: object
             targetObject:
               properties:
-                labels:
-                  type: object
                 name:
                   minLength: 1
                   type: string
                 namespace:
                   minLength: 1
                   type: string
+                patch:
+                  type: string
               required:
               - name
               - namespace
+              - patch
               type: object
           required:
           - sourceObject
