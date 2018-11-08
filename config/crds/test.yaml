@@ -1,0 +1,45 @@
+apiVersion: apps/v1 # for versions before 1.9.0 use apps/v1beta2
+kind: Deployment
+metadata:
+  name: foo
+spec:
+  selector:
+    matchLabels:
+      app: nginx
+  replicas: 1 # tells deployment to run 2 pods matching the template
+  template:
+    metadata:
+      labels:
+        app: nginx
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.7.9
+        ports:
+        - containerPort: 80
+---
+apiVersion: datadoghq.datadoghq.com/v1alpha1
+kind: Birdcage
+metadata:
+  labels:
+    controller-tools.k8s.io: "1.0"
+  name: birdcage-sample
+spec:
+  sourceObject:
+    name: foo
+    namespace: default
+  targetObject:
+    name: foo-canary
+    namespace: default
+    patch: |
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: foo
+      spec:
+        replicas: 2
+        template:
+          spec:
+            containers:
+            - name: nginx
+              image: nginx:latest
