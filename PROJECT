@@ -1,0 +1,3 @@
+version: "1"
+domain: datadoghq.com
+repo: github.com/bpineau/birdcage
