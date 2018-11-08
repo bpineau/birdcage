@@ -34,7 +34,18 @@ func TestStorageBirdcage(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "foo",
 			Namespace: "default",
-		}}
+		},
+		Spec: BirdcageSpec{
+			SourceObject: BirdcageSourceObject{
+				Name:      "foo",
+				Namespace: "default",
+			},
+			TargetObject: BirdcageTargetObject{
+				Name:      "foo-canary",
+				Namespace: "default",
+			},
+		},
+	}
 	g := gomega.NewGomegaWithT(t)
 
 	// Test Create
