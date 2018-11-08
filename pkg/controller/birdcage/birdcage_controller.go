@@ -18,6 +18,7 @@ package birdcage
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"reflect"
 
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
@@ -89,10 +90,13 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
+	scheme := mgr.GetScheme()
+
 	return &ReconcileBirdcage{
-		Client:   mgr.GetClient(),
-		scheme:   mgr.GetScheme(),
+		Client:    mgr.GetClient(),
+		scheme:    scheme,
 		recorder: mgr.GetRecorder("birdcages"),
+		kustomize: NewKustomizeHelper(json.NewYAMLSerializer(json.DefaultMetaFactory, scheme, scheme)),
 	}
 }
 
@@ -140,6 +144,7 @@ type ReconcileBirdcage struct {
 	client.Client
 	scheme   *runtime.Scheme
 	recorder record.EventRecorder
+	kustomize *KustomizeHelper
 }
 
 // Reconcile reads that state of the cluster for a Birdcage object and makes changes based on the state read

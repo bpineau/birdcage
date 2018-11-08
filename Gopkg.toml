@@ -19,6 +19,9 @@ required = [
 [prune]
   go-tests = true
 
+[[constraint]]
+  name="sigs.k8s.io/kustomize"
+  version="v1.0.10"
 
 # STANZAS BELOW ARE GENERATED AND MAY BE WRITTEN - DO NOT MODIFY BELOW THIS LINE.
 
