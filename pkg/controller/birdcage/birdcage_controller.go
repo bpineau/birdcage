@@ -18,12 +18,10 @@ package birdcage
 
 import (
 	"context"
-	"log"
 	"reflect"
 
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
-	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -31,16 +29,55 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	logf "sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
-/**
-* USER ACTION REQUIRED: This is a scaffold file intended for the user to modify with their own Controller
-* business logic.  Delete these comments after modifying this file.*
- */
+var (
+	watchedSourceList = make(map[string]types.NamespacedName)
+
+	p = predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			nspname := &types.NamespacedName{
+				Namespace: e.MetaOld.GetNamespace(),
+				Name:      e.MetaOld.GetName(),
+			}
+			if _, ok := watchedSourceList[nspname.String()]; !ok {
+				return false
+			}
+			return e.ObjectOld != e.ObjectNew
+		},
+		CreateFunc: func(e event.CreateEvent) bool {
+			nspname := &types.NamespacedName{
+				Namespace: e.Meta.GetNamespace(),
+				Name:      e.Meta.GetName(),
+			}
+			if _, ok := watchedSourceList[nspname.String()]; !ok {
+				return false
+			}
+			return true
+		},
+	}
+
+	mapFn = handler.ToRequestsFunc(
+		func(a handler.MapObject) []reconcile.Request {
+			nspname := &types.NamespacedName{
+				Namespace: a.Meta.GetNamespace(),
+				Name:      a.Meta.GetName(),
+			}
+			return []reconcile.Request{
+				{NamespacedName: types.NamespacedName{
+					Name:      watchedSourceList[nspname.String()].Name,
+					Namespace: watchedSourceList[nspname.String()].Namespace,
+				}},
+			}
+		})
+)
 
 // Add creates a new Birdcage Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -68,12 +105,13 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// TODO(user): Modify this to be the types you create
-	// Uncomment watch a Deployment created by Birdcage - change this for objects you create
-	err = c.Watch(&source.Kind{Type: &appsv1.Deployment{}}, &handler.EnqueueRequestForOwner{
-		IsController: true,
-		OwnerType:    &datadoghqv1alpha1.Birdcage{},
-	})
+	// Watch source deployments
+	err = c.Watch(
+		&source.Kind{Type: &appsv1.Deployment{}},
+		&handler.EnqueueRequestsFromMapFunc{
+			ToRequests: mapFn,
+		},
+		p)
 	if err != nil {
 		return err
 	}
@@ -91,14 +129,16 @@ type ReconcileBirdcage struct {
 
 // Reconcile reads that state of the cluster for a Birdcage object and makes changes based on the state read
 // and what is in the Birdcage.Spec
-// TODO(user): Modify this Reconcile function to implement your Controller logic.  The scaffolding writes
-// a Deployment as an example
 // Automatically generate RBAC rules to allow the Controller to read and write Deployments
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=datadoghq.datadoghq.com,resources=birdcages,verbs=get;list;watch;create;update;patch;delete
 func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	// Fetch the Birdcage instance
 	instance := &datadoghqv1alpha1.Birdcage{}
+
+	log := logf.Log.WithName("reconcile")
+	log.Info("called", "nspname", request.NamespacedName.String())
+
 	err := r.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
@@ -110,41 +150,34 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	// TODO(user): Change this to be the object type created by your controller
-	// Define the desired Deployment object
-	deploy := &appsv1.Deployment{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      instance.Name + "-deployment",
-			Namespace: instance.Namespace,
-		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: map[string]string{"deployment": instance.Name + "-deployment"},
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{"deployment": instance.Name + "-deployment"}},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						{
-							Name:  "nginx",
-							Image: "nginx",
-						},
-					},
-				},
-			},
-		},
+	watchedSourceName := &types.NamespacedName{
+		Namespace: instance.Spec.SourceObject.Namespace,
+		Name:      instance.Spec.SourceObject.Name,
 	}
-	if err := controllerutil.SetControllerReference(instance, deploy, r.scheme); err != nil {
+	watchedSourceList[watchedSourceName.String()] = request.NamespacedName
+
+	watchedSource := &appsv1.Deployment{}
+	if err = r.Get(context.TODO(), *watchedSourceName, watchedSource); err != nil {
+		// no deployment yet (or anymore), nothing to do
+		if errors.IsNotFound(err) {
+			return reconcile.Result{}, nil
+		}
+		// Error reading the object - requeue the request.
 		return reconcile.Result{}, err
 	}
 
-	// TODO(user): Change this for the object type created by your controller
-	// Check if the Deployment already exists
+	target := newCanaryDeployment(instance, watchedSource)
+	// XXX patch/kustomize target
+
+	if err := controllerutil.SetControllerReference(instance, target, r.scheme); err != nil {
+		return reconcile.Result{}, err
+	}
+
 	found := &appsv1.Deployment{}
-	err = r.Get(context.TODO(), types.NamespacedName{Name: deploy.Name, Namespace: deploy.Namespace}, found)
+	err = r.Get(context.TODO(), types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
-		log.Printf("Creating Deployment %s/%s\n", deploy.Namespace, deploy.Name)
-		err = r.Create(context.TODO(), deploy)
+		log.Info("Creating canary deployment", "namespace", target.Namespace, "name", target.Name)
+		err = r.Create(context.TODO(), target)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
@@ -152,29 +185,29 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	// TODO(user): Change this for the object type created by your controller
 	// Update the found object and write the result back if there are any changes
-	if !reflect.DeepEqual(deploy.Spec, found.Spec) {
-		found.Spec = deploy.Spec
-		log.Printf("Updating Deployment %s/%s\n", deploy.Namespace, deploy.Name)
+	if !reflect.DeepEqual(target.Spec, found.Spec) {
+		found.Spec = target.Spec
+		log.Info("Updating canary deployment", "namespace", target.Namespace, "name", target.Name)
 		err = r.Update(context.TODO(), found)
 		if err != nil {
 			return reconcile.Result{}, err
 		}
 	}
+
 	return reconcile.Result{}, nil
 }
 
-func newCanaryDeployment(birdcage datadoghqv1alpha1.Birdcage, source *appsv1.Deployment) *appsv1.Deployment {
+func newCanaryDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.Deployment) *appsv1.Deployment {
 	targetObject := &birdcage.Spec.TargetObject
 	sourceSpec := &source.Spec
 	var nbReplicas int32 = 1
 
 	res := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
-			Name: targetObject.Name,
+			Name:      targetObject.Name,
 			Namespace: targetObject.Namespace,
-			Labels: targetObject.Labels,
+			Labels:    targetObject.Labels,
 		},
 		Spec: appsv1.DeploymentSpec{
 			// TODO: make this configurable with the targetObject
@@ -184,5 +217,8 @@ func newCanaryDeployment(birdcage datadoghqv1alpha1.Birdcage, source *appsv1.Dep
 	}
 	// Overwrite labels in template as well
 	res.Spec.Template.Labels = targetObject.Labels
+	res.Spec.Selector = &metav1.LabelSelector{
+		MatchLabels: targetObject.Labels,
+	}
 	return res
 }
