@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
@@ -88,7 +89,11 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	return &ReconcileBirdcage{Client: mgr.GetClient(), scheme: mgr.GetScheme()}
+	return &ReconcileBirdcage{
+		Client:   mgr.GetClient(),
+		scheme:   mgr.GetScheme(),
+		recorder: mgr.GetRecorder("birdcages"),
+	}
 }
 
 // add adds a new Controller to mgr with r as the reconcile.Reconciler
@@ -116,6 +121,15 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
+	// Watch target deployments
+	err = c.Watch(&source.Kind{Type: &appsv1.Deployment{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &datadoghqv1alpha1.Birdcage{},
+	})
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -124,7 +138,8 @@ var _ reconcile.Reconciler = &ReconcileBirdcage{}
 // ReconcileBirdcage reconciles a Birdcage object
 type ReconcileBirdcage struct {
 	client.Client
-	scheme *runtime.Scheme
+	scheme   *runtime.Scheme
+	recorder record.EventRecorder
 }
 
 // Reconcile reads that state of the cluster for a Birdcage object and makes changes based on the state read
@@ -143,7 +158,6 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Object not found, return.  Created objects are automatically garbage collected.
-			// For additional cleanup logic use finalizers.
 			return reconcile.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
@@ -156,9 +170,16 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 	}
 	watchedSourceList[watchedSourceName.String()] = request.NamespacedName
 
+	// The birdcage object is being deleted, we're done here
+	if !instance.ObjectMeta.DeletionTimestamp.IsZero() {
+		delete(watchedSourceList, watchedSourceName.String())
+		return reconcile.Result{}, nil
+	}
+
+	// Retrieve our watched source deployment (if it exists, else we're done for now)
 	watchedSource := &appsv1.Deployment{}
 	if err = r.Get(context.TODO(), *watchedSourceName, watchedSource); err != nil {
-		// no deployment yet (or anymore), nothing to do
+		// No deployment yet (or anymore), nothing to do
 		if errors.IsNotFound(err) {
 			return reconcile.Result{}, nil
 		}
@@ -166,8 +187,10 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
+	// Create or update our canary/target deployment
 	target := newCanaryDeployment(instance, watchedSource)
-	// XXX patch/kustomize target
+
+	// TODO patch target with kustomize here
 
 	if err := controllerutil.SetControllerReference(instance, target, r.scheme); err != nil {
 		return reconcile.Result{}, err
@@ -185,7 +208,6 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	// Update the found object and write the result back if there are any changes
 	if !reflect.DeepEqual(target.Spec, found.Spec) {
 		found.Spec = target.Spec
 		log.Info("Updating canary deployment", "namespace", target.Namespace, "name", target.Name)
