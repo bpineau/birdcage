@@ -21,6 +21,36 @@ spec:
         metadata:
           type: object
         spec:
+          properties:
+            sourceObject:
+              properties:
+                name:
+                  minLength: 1
+                  type: string
+                namespace:
+                  minLength: 1
+                  type: string
+              required:
+              - name
+              - namespace
+              type: object
+            targetObject:
+              properties:
+                labels:
+                  type: object
+                name:
+                  minLength: 1
+                  type: string
+                namespace:
+                  minLength: 1
+                  type: string
+              required:
+              - name
+              - namespace
+              type: object
+          required:
+          - sourceObject
+          - targetObject
           type: object
         status:
           type: object

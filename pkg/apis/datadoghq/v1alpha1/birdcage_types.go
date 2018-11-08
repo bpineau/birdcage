@@ -23,10 +23,27 @@ import (
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
 // NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
 
+type BirdcageSourceObject struct {
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +kubebuilder:validation:MinLength=1
+	Namespace string `json:"namespace"`
+}
+
+type BirdcageTargetObject struct {
+	// +kubebuilder:validation:MinLength=1
+	Name string `json:"name"`
+	// +kubebuilder:validation:MinLength=1
+	Namespace string            `json:"namespace"`
+	Labels    map[string]string `json:"labels,omitempty"`
+}
+
 // BirdcageSpec defines the desired state of Birdcage
 type BirdcageSpec struct {
 	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
 	// Important: Run "make" to regenerate code after modifying this file
+	SourceObject BirdcageSourceObject `json:"sourceObject"`
+	TargetObject BirdcageTargetObject `json:"targetObject"`
 }
 
 // BirdcageStatus defines the observed state of Birdcage
