@@ -164,3 +164,25 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 	}
 	return reconcile.Result{}, nil
 }
+
+func newCanaryDeployment(birdcage datadoghqv1alpha1.Birdcage, source *appsv1.Deployment) *appsv1.Deployment {
+	targetObject := &birdcage.Spec.TargetObject
+	sourceSpec := &source.Spec
+	var nbReplicas int32 = 1
+
+	res := &appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: targetObject.Name,
+			Namespace: targetObject.Namespace,
+			Labels: targetObject.Labels,
+		},
+		Spec: appsv1.DeploymentSpec{
+			// TODO: make this configurable with the targetObject
+			Replicas: &nbReplicas,
+			Template: *sourceSpec.Template.DeepCopy(),
+		},
+	}
+	// Overwrite labels in template as well
+	res.Spec.Template.Labels = targetObject.Labels
+	return res
+}
