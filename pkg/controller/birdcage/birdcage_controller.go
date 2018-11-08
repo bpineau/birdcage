@@ -244,7 +244,6 @@ func newCanaryDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.De
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      targetObject.Name,
 			Namespace: targetObject.Namespace,
-			Labels:    targetObject.Labels,
 		},
 		Spec: appsv1.DeploymentSpec{
 			// TODO: make this configurable with the targetObject

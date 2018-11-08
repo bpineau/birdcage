@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
 // EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
@@ -34,8 +35,8 @@ type BirdcageTargetObject struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
 	// +kubebuilder:validation:MinLength=1
-	Namespace string            `json:"namespace"`
-	Labels    map[string]string `json:"labels,omitempty"`
+	Namespace string                    `json:"namespace"`
+	Patch     unstructured.Unstructured `json:"patch"`
 }
 
 // BirdcageSpec defines the desired state of Birdcage
