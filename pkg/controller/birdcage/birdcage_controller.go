@@ -40,7 +40,7 @@ import (
 )
 
 var (
-	watchedSourceList = make(map[string]types.NamespacedName)
+	watchedSourceList = make(map[string]types.NamespacedName) // TODO lock
 
 	p = predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -148,11 +148,16 @@ type ReconcileBirdcage struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=datadoghq.datadoghq.com,resources=birdcages,verbs=get;list;watch;create;update;patch;delete
 func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	// Fetch the Birdcage instance
-	instance := &datadoghqv1alpha1.Birdcage{}
+	// spurious calls
+	if request.Name == "" {
+		return reconcile.Result{}, nil
+	}
 
 	log := logf.Log.WithName("reconcile")
-	log.Info("called", "nspname", request.NamespacedName.String())
+	log.Info("DEBUG called", "nspname", request.NamespacedName.String())
+
+	// Fetch the Birdcage instance
+	instance := &datadoghqv1alpha1.Birdcage{}
 
 	err := r.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
@@ -192,6 +197,7 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 
 	// TODO patch target with kustomize here
 
+	// Target deployment is owned by our birdcage object
 	if err := controllerutil.SetControllerReference(instance, target, r.scheme); err != nil {
 		return reconcile.Result{}, err
 	}
@@ -202,8 +208,10 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		log.Info("Creating canary deployment", "namespace", target.Namespace, "name", target.Name)
 		err = r.Create(context.TODO(), target)
 		if err != nil {
+			log.Error(err, "creating deployment", "namespace", target.Namespace, "name", target.Name)
 			return reconcile.Result{}, err
 		}
+		r.recorder.Eventf(instance, "Normal", "Created", "created deployment %s/%s", target.Namespace, target.Name)
 	} else if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -213,8 +221,10 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		log.Info("Updating canary deployment", "namespace", target.Namespace, "name", target.Name)
 		err = r.Update(context.TODO(), found)
 		if err != nil {
+			log.Error(err, "updating deployment", "namespace", target.Namespace, "name", target.Name)
 			return reconcile.Result{}, err
 		}
+		r.recorder.Eventf(instance, "Normal", "Updated", "updated deployment %s/%s", target.Namespace, target.Name)
 	}
 
 	return reconcile.Result{}, nil
