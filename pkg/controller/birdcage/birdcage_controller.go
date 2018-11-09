@@ -19,6 +19,7 @@ package birdcage
 import (
 	"context"
 	"reflect"
+	"sync"
 
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
 	appsv1 "k8s.io/api/apps/v1"
@@ -40,7 +41,8 @@ import (
 )
 
 var (
-	watchedSourceList = make(map[string]types.NamespacedName) // TODO lock
+	watchedSourceList   = make(map[string]types.NamespacedName)
+	watchedSourceListMu sync.RWMutex
 
 	p = predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -48,6 +50,8 @@ var (
 				Namespace: e.MetaNew.GetNamespace(),
 				Name:      e.MetaNew.GetName(),
 			}
+			watchedSourceListMu.RLock()
+			defer watchedSourceListMu.RUnlock()
 			if _, ok := watchedSourceList[nspname.String()]; !ok {
 				return false
 			}
@@ -58,6 +62,8 @@ var (
 				Namespace: e.Meta.GetNamespace(),
 				Name:      e.Meta.GetName(),
 			}
+			watchedSourceListMu.RLock()
+			defer watchedSourceListMu.RUnlock()
 			if _, ok := watchedSourceList[nspname.String()]; !ok {
 				return false
 			}
@@ -71,6 +77,8 @@ var (
 				Namespace: a.Meta.GetNamespace(),
 				Name:      a.Meta.GetName(),
 			}
+			watchedSourceListMu.RLock()
+			defer watchedSourceListMu.RUnlock()
 			return []reconcile.Request{
 				{NamespacedName: types.NamespacedName{
 					Name:      watchedSourceList[nspname.String()].Name,
@@ -165,11 +173,15 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		Namespace: instance.Spec.SourceObject.Namespace,
 		Name:      instance.Spec.SourceObject.Name,
 	}
+	watchedSourceListMu.Lock()
 	watchedSourceList[watchedSourceName.String()] = request.NamespacedName
+	watchedSourceListMu.Unlock()
 
 	// The birdcage object is being deleted, we're done here
 	if !instance.ObjectMeta.DeletionTimestamp.IsZero() {
+		watchedSourceListMu.Lock()
 		delete(watchedSourceList, watchedSourceName.String())
+		watchedSourceListMu.Unlock()
 		return reconcile.Result{}, nil
 	}
 
