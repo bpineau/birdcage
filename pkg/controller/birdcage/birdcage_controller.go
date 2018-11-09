@@ -148,8 +148,6 @@ type ReconcileBirdcage struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=datadoghq.datadoghq.com,resources=birdcages,verbs=get;list;watch;create;update;patch;delete
 func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	log := logf.Log.WithName("reconcile")
-
 	// Fetch the Birdcage instance
 	instance := &datadoghqv1alpha1.Birdcage{}
 
@@ -186,26 +184,17 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	// Create or update our canary/target deployment
-	target := newCanaryDeployment(instance, watchedSource)
-
-	// TODO patch target with kustomize here
-
-	// Target deployment is owned by our birdcage object
-	if err := controllerutil.SetControllerReference(instance, target, r.scheme); err != nil {
+	// This will be our target/canary deployment model
+	target, err := newCanaryDeployment(instance, watchedSource, r.scheme)
+	if err != nil {
 		return reconcile.Result{}, err
 	}
 
+	// Create target/canary if needed
 	found := &appsv1.Deployment{}
 	err = r.Get(context.TODO(), types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
-		err = r.Create(context.TODO(), target)
-		log.Info("Creating canary deployment", "namespace", target.Namespace, "name", target.Name)
-		if err != nil {
-			log.Error(err, "creating deployment", "namespace", target.Namespace, "name", target.Name)
-			return reconcile.Result{}, err
-		}
-		r.recorder.Eventf(instance, "Normal", "Created", "created deployment %s/%s", target.Namespace, target.Name)
+		return r.create(instance, target)
 	} else if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -215,21 +204,40 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, nil
 	}
 
+	// Update target/canary if needed
 	if !reflect.DeepEqual(target.Spec, found.Spec) {
 		found.Spec = target.Spec
-		err = r.Update(context.TODO(), found)
-		if err != nil {
-			log.Error(err, "updating deployment", "namespace", target.Namespace, "name", target.Name)
-			return reconcile.Result{}, err
-		}
-		log.Info("Updated canary deployment", "namespace", target.Namespace, "name", target.Name)
-		r.recorder.Eventf(instance, "Normal", "Updated", "updated deployment %s/%s", target.Namespace, target.Name)
+		return r.update(instance, found)
 	}
 
 	return reconcile.Result{}, nil
 }
 
-func newCanaryDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.Deployment) *appsv1.Deployment {
+func (r *ReconcileBirdcage) create(instance *datadoghqv1alpha1.Birdcage, target *appsv1.Deployment) (reconcile.Result, error) {
+	log := logf.Log.WithName("reconcile")
+	err := r.Create(context.TODO(), target)
+	if err != nil {
+		log.Error(err, "creating deployment", "namespace", target.Namespace, "name", target.Name)
+		return reconcile.Result{}, err
+	}
+	log.Info("Created canary deployment", "namespace", target.Namespace, "name", target.Name)
+	r.recorder.Eventf(instance, "Normal", "Created", "created deployment %s/%s", target.Namespace, target.Name)
+	return reconcile.Result{}, nil
+}
+
+func (r *ReconcileBirdcage) update(instance *datadoghqv1alpha1.Birdcage, target *appsv1.Deployment) (reconcile.Result, error) {
+	log := logf.Log.WithName("reconcile")
+	err := r.Update(context.TODO(), target)
+	if err != nil {
+		log.Error(err, "updating deployment", "namespace", target.Namespace, "name", target.Name)
+		return reconcile.Result{}, err
+	}
+	log.Info("Updated canary deployment", "namespace", target.Namespace, "name", target.Name)
+	r.recorder.Eventf(instance, "Normal", "Updated", "updated deployment %s/%s", target.Namespace, target.Name)
+	return reconcile.Result{}, nil
+}
+
+func newCanaryDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.Deployment, scheme *runtime.Scheme) (*appsv1.Deployment, error) {
 	targetObject := &birdcage.Spec.TargetObject
 	sourceSpec := &source.Spec
 	var nbReplicas int32 = 1
@@ -251,5 +259,12 @@ func newCanaryDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.De
 	res.Spec.Selector = &metav1.LabelSelector{
 		MatchLabels: targetObject.Labels,
 	}
-	return res
+
+	// Target deployment is owned by our birdcage object
+	if err := controllerutil.SetControllerReference(birdcage, res, scheme); err != nil {
+		return res, err
+	}
+
+	// TODO patch target with kustomize or jsonnet here
+	return res, nil
 }
