@@ -38,6 +38,8 @@ spec:
               properties:
                 labels:
                   type: object
+                luaCode:
+                  type: string
                 name:
                   minLength: 1
                   type: string
@@ -47,6 +49,7 @@ spec:
               required:
               - name
               - namespace
+              - luaCode
               type: object
           required:
           - sourceObject

@@ -17,9 +17,9 @@ limitations under the License.
 package birdcage
 
 import (
-	"log"
 	"os"
 	"path/filepath"
+	"sigs.k8s.io/controller-runtime/pkg/runtime/log"
 	"sync"
 	"testing"
 
@@ -35,6 +35,8 @@ import (
 var cfg *rest.Config
 
 func TestMain(m *testing.M) {
+	logger := log.ZapLogger(true)
+	log.SetLogger(logger)
 	t := &envtest.Environment{
 		CRDDirectoryPaths: []string{filepath.Join("..", "..", "..", "config", "crds")},
 	}
@@ -42,7 +44,8 @@ func TestMain(m *testing.M) {
 
 	var err error
 	if cfg, err = t.Start(); err != nil {
-		log.Fatal(err)
+		logger.Error(err, "failed to start test suite")
+		os.Exit(1)
 	}
 
 	code := m.Run()

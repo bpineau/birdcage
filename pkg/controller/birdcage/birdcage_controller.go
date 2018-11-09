@@ -18,10 +18,15 @@ package birdcage
 
 import (
 	"context"
+	"fmt"
+	"github.com/yuin/gopher-lua"
+	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"reflect"
+	"strings"
 	"sync"
 
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
+	luajson "github.com/bpineau/birdcage/pkg/lua-json"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -97,10 +102,12 @@ func Add(mgr manager.Manager) error {
 
 // newReconciler returns a new reconcile.Reconciler
 func newReconciler(mgr manager.Manager) reconcile.Reconciler {
+	scheme := mgr.GetScheme()
 	return &ReconcileBirdcage{
-		Client:   mgr.GetClient(),
-		scheme:   mgr.GetScheme(),
-		recorder: mgr.GetRecorder("birdcages"),
+		Client:     mgr.GetClient(),
+		scheme:     scheme,
+		recorder:   mgr.GetRecorder("birdcages"),
+		serializer: json.NewSerializer(json.DefaultMetaFactory, scheme, scheme, false),
 	}
 }
 
@@ -146,8 +153,9 @@ var _ reconcile.Reconciler = &ReconcileBirdcage{}
 // ReconcileBirdcage reconciles a Birdcage object
 type ReconcileBirdcage struct {
 	client.Client
-	scheme   *runtime.Scheme
-	recorder record.EventRecorder
+	scheme     *runtime.Scheme
+	recorder   record.EventRecorder
+	serializer runtime.Serializer
 }
 
 // Reconcile reads that state of the cluster for a Birdcage object and makes changes based on the state read
@@ -196,8 +204,8 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	// This will be our target/canary deployment model
-	target, err := newCanaryDeployment(instance, watchedSource, r.scheme)
+	// Create or update our canary/target deployment
+	target, err := r.patchDeployment(instance, watchedSource)
 	if err != nil {
 		return reconcile.Result{}, err
 	}
@@ -249,34 +257,69 @@ func (r *ReconcileBirdcage) update(instance *datadoghqv1alpha1.Birdcage, target 
 	return reconcile.Result{}, nil
 }
 
-func newCanaryDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.Deployment, scheme *runtime.Scheme) (*appsv1.Deployment, error) {
+func (r *ReconcileBirdcage) patchDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.Deployment) (*appsv1.Deployment, error) {
 	targetObject := &birdcage.Spec.TargetObject
-	sourceSpec := &source.Spec
-	var nbReplicas int32 = 1
-
-	res := &appsv1.Deployment{
+	obj := &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      targetObject.Name,
 			Namespace: targetObject.Namespace,
 			Labels:    targetObject.Labels,
 		},
-		Spec: appsv1.DeploymentSpec{
-			// TODO: make this configurable with the targetObject
-			Replicas: &nbReplicas,
-			Template: *sourceSpec.Template.DeepCopy(),
-		},
+		Spec: source.Spec,
 	}
-	// Overwrite labels in template as well
-	res.Spec.Template.Labels = targetObject.Labels
-	res.Spec.Selector = &metav1.LabelSelector{
-		MatchLabels: targetObject.Labels,
+
+	buffer := strings.Builder{}
+	if err := r.serializer.Encode(obj, &buffer); err != nil {
+		return nil, err
+	}
+
+	encoded, err := runLuaPatch(birdcage.Spec.TargetObject.LuaCode, buffer.String())
+	if err != nil {
+		return nil, err
+	}
+
+	gvk := obj.GroupVersionKind()
+	_, _, err = r.serializer.Decode([]byte(encoded), &gvk, obj)
+	if err != nil {
+		return nil, err
 	}
 
 	// Target deployment is owned by our birdcage object
-	if err := controllerutil.SetControllerReference(birdcage, res, scheme); err != nil {
-		return res, err
+	if err := controllerutil.SetControllerReference(birdcage, obj, r.scheme); err != nil {
+		return nil, err
 	}
 
-	// TODO patch target with kustomize or jsonnet here
-	return res, nil
+	return obj, nil
+}
+
+const luaStub = `
+local json = require("json")
+
+function __stub(rawJSON)
+	retObj = patch(json.decode(rawJSON))
+	return json.encode(retObj)
+end
+`
+
+func runLuaPatch(code string, rawInput string) (string, error) {
+	L := lua.NewState()
+	L.PreloadModule("json", luajson.Loader)
+	defer L.Close()
+
+	err := L.DoString(luaStub + code)
+	if err != nil {
+		return "", fmt.Errorf("failed to load LUA script: %s", err)
+	}
+
+	if err := L.CallByParam(lua.P{
+		Fn:      L.GetGlobal("__stub"),
+		NRet:    1,
+		Protect: true,
+	}, lua.LString(rawInput)); err != nil {
+		return "", err
+	}
+	ret := L.Get(-1) // returned value
+	L.Pop(1)         // remove received value
+
+	return ret.String(), nil
 }

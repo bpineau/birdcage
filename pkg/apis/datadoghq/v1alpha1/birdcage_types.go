@@ -36,6 +36,7 @@ type BirdcageTargetObject struct {
 	// +kubebuilder:validation:MinLength=1
 	Namespace string            `json:"namespace"`
 	Labels    map[string]string `json:"labels,omitempty"`
+	LuaCode   string            `json:"luaCode"`
 }
 
 // BirdcageSpec defines the desired state of Birdcage

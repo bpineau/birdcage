@@ -74,6 +74,12 @@ var (
 				Name:      "bar-canary",
 				Namespace: "default",
 				Labels:    map[string]string{"a": "b"},
+				LuaCode: `
+function patch(d)
+	d.spec.replicas = 0
+	return d
+end
+`,
 			},
 		},
 	}
