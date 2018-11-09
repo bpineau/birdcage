@@ -45,8 +45,8 @@ var (
 	p = predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
 			nspname := &types.NamespacedName{
-				Namespace: e.MetaOld.GetNamespace(),
-				Name:      e.MetaOld.GetName(),
+				Namespace: e.MetaNew.GetNamespace(),
+				Name:      e.MetaNew.GetName(),
 			}
 			if _, ok := watchedSourceList[nspname.String()]; !ok {
 				return false
@@ -148,13 +148,7 @@ type ReconcileBirdcage struct {
 // +kubebuilder:rbac:groups=apps,resources=deployments,verbs=get;list;watch;create;update;patch;delete
 // +kubebuilder:rbac:groups=datadoghq.datadoghq.com,resources=birdcages,verbs=get;list;watch;create;update;patch;delete
 func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Result, error) {
-	// spurious calls
-	if request.Name == "" {
-		return reconcile.Result{}, nil
-	}
-
 	log := logf.Log.WithName("reconcile")
-	log.Info("DEBUG called", "nspname", request.NamespacedName.String())
 
 	// Fetch the Birdcage instance
 	instance := &datadoghqv1alpha1.Birdcage{}
@@ -205,8 +199,8 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 	found := &appsv1.Deployment{}
 	err = r.Get(context.TODO(), types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
-		log.Info("Creating canary deployment", "namespace", target.Namespace, "name", target.Name)
 		err = r.Create(context.TODO(), target)
+		log.Info("Creating canary deployment", "namespace", target.Namespace, "name", target.Name)
 		if err != nil {
 			log.Error(err, "creating deployment", "namespace", target.Namespace, "name", target.Name)
 			return reconcile.Result{}, err
@@ -216,14 +210,19 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
+	if found.GetNamespace() == "" || found.GetName() == "" {
+		// object still being created
+		return reconcile.Result{}, nil
+	}
+
 	if !reflect.DeepEqual(target.Spec, found.Spec) {
 		found.Spec = target.Spec
-		log.Info("Updating canary deployment", "namespace", target.Namespace, "name", target.Name)
 		err = r.Update(context.TODO(), found)
 		if err != nil {
 			log.Error(err, "updating deployment", "namespace", target.Namespace, "name", target.Name)
 			return reconcile.Result{}, err
 		}
+		log.Info("Updated canary deployment", "namespace", target.Namespace, "name", target.Name)
 		r.recorder.Eventf(instance, "Normal", "Updated", "updated deployment %s/%s", target.Namespace, target.Name)
 	}
 
