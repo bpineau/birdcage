@@ -19,11 +19,12 @@ package birdcage
 import (
 	"context"
 	"fmt"
-	"github.com/yuin/gopher-lua"
-	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 	"reflect"
 	"strings"
 	"sync"
+
+	"github.com/yuin/gopher-lua"
+	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
 	luajson "github.com/bpineau/birdcage/pkg/lua-json"
@@ -225,6 +226,7 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 	}
 
 	// Update target/canary if needed
+
 	if !reflect.DeepEqual(target.Spec, found.Spec) {
 		found.Spec = target.Spec
 		return r.update(instance, found)
@@ -263,7 +265,7 @@ func (r *ReconcileBirdcage) patchDeployment(birdcage *datadoghqv1alpha1.Birdcage
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      targetObject.Name,
 			Namespace: targetObject.Namespace,
-			Labels:    targetObject.Labels,
+			Labels:    source.GetLabels(),
 		},
 		Spec: source.Spec,
 	}
@@ -272,7 +274,6 @@ func (r *ReconcileBirdcage) patchDeployment(birdcage *datadoghqv1alpha1.Birdcage
 	if err := r.serializer.Encode(obj, &buffer); err != nil {
 		return nil, err
 	}
-
 	encoded, err := runLuaPatch(birdcage.Spec.TargetObject.LuaCode, buffer.String())
 	if err != nil {
 		return nil, err
