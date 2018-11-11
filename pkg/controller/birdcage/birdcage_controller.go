@@ -21,13 +21,13 @@ import (
 	"fmt"
 	"reflect"
 	"strings"
-	"sync"
 
 	"github.com/yuin/gopher-lua"
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
 	luajson "github.com/bpineau/birdcage/pkg/lua-json"
+	"github.com/bpineau/birdcage/pkg/watchlist"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -46,9 +46,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
+const finalizerKey = "finalizer.birdcage.datadoghq.com"
+
 var (
-	watchedSourceList   = make(map[string]types.NamespacedName)
-	watchedSourceListMu sync.RWMutex
+	watchedSourceList = watchlist.New()
 
 	p = predicate.Funcs{
 		UpdateFunc: func(e event.UpdateEvent) bool {
@@ -56,9 +57,8 @@ var (
 				Namespace: e.MetaNew.GetNamespace(),
 				Name:      e.MetaNew.GetName(),
 			}
-			watchedSourceListMu.RLock()
-			defer watchedSourceListMu.RUnlock()
-			if _, ok := watchedSourceList[nspname.String()]; !ok {
+			ok := watchedSourceList.Get(*nspname)
+			if len(ok) == 0 {
 				return false
 			}
 			return e.ObjectOld != e.ObjectNew
@@ -68,9 +68,8 @@ var (
 				Namespace: e.Meta.GetNamespace(),
 				Name:      e.Meta.GetName(),
 			}
-			watchedSourceListMu.RLock()
-			defer watchedSourceListMu.RUnlock()
-			if _, ok := watchedSourceList[nspname.String()]; !ok {
+			ok := watchedSourceList.Get(*nspname)
+			if len(ok) == 0 {
 				return false
 			}
 			return true
@@ -83,14 +82,16 @@ var (
 				Namespace: a.Meta.GetNamespace(),
 				Name:      a.Meta.GetName(),
 			}
-			watchedSourceListMu.RLock()
-			defer watchedSourceListMu.RUnlock()
-			return []reconcile.Request{
-				{NamespacedName: types.NamespacedName{
-					Name:      watchedSourceList[nspname.String()].Name,
-					Namespace: watchedSourceList[nspname.String()].Namespace,
-				}},
+
+			var result []reconcile.Request
+			srcs := watchedSourceList.Get(*nspname)
+			for _, src := range srcs {
+				rr := reconcile.Request{
+					NamespacedName: src,
+				}
+				result = append(result, rr)
 			}
+			return result
 		})
 )
 
@@ -136,7 +137,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
-	// Watch target deployments
+	// Watch generated, child target deployments
 	err = c.Watch(&source.Kind{Type: &appsv1.Deployment{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
 		OwnerType:    &datadoghqv1alpha1.Birdcage{},
@@ -166,45 +167,53 @@ type ReconcileBirdcage struct {
 func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Result, error) {
 	// Fetch the Birdcage instance
 	instance := &datadoghqv1alpha1.Birdcage{}
-
 	err := r.Get(context.TODO(), request.NamespacedName, instance)
 	if err != nil {
 		if errors.IsNotFound(err) {
-			// Object not found, return.  Created objects are automatically garbage collected.
+			// Cleanup is handled by finalizer and children ownership refs
 			return reconcile.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
 		return reconcile.Result{}, err
+	}
+
+	if !instance.ObjectMeta.DeletionTimestamp.IsZero() {
+		// The birdcage object is being deleted, we're done here
+		return r.finalize(instance)
+	}
+
+	// Inject our finalizer if needed
+	if !containsString(instance.ObjectMeta.Finalizers, finalizerKey) {
+		instance.ObjectMeta.Finalizers = append(instance.ObjectMeta.Finalizers, finalizerKey)
+		if err := r.Update(context.Background(), instance); err != nil {
+			return reconcile.Result{Requeue: true}, nil
+		}
 	}
 
 	watchedSourceName := &types.NamespacedName{
 		Namespace: instance.Spec.SourceObject.Namespace,
 		Name:      instance.Spec.SourceObject.Name,
 	}
-	watchedSourceListMu.Lock()
-	watchedSourceList[watchedSourceName.String()] = request.NamespacedName
-	watchedSourceListMu.Unlock()
+	watchedSourceList.Add(*watchedSourceName, request.NamespacedName)
 
-	// The birdcage object is being deleted, we're done here
-	if !instance.ObjectMeta.DeletionTimestamp.IsZero() {
-		watchedSourceListMu.Lock()
-		delete(watchedSourceList, watchedSourceName.String())
-		watchedSourceListMu.Unlock()
-		return reconcile.Result{}, nil
+	targetName := types.NamespacedName{
+		Namespace: instance.Spec.TargetObject.Namespace,
+		Name:      instance.Spec.TargetObject.Name,
 	}
 
-	// Retrieve our watched source deployment (if it exists, else we're done for now)
+	// Retrieve our watched source deployment
 	watchedSource := &appsv1.Deployment{}
 	if err = r.Get(context.TODO(), *watchedSourceName, watchedSource); err != nil {
-		// No deployment yet (or anymore), nothing to do
+		// No source deployment anymore
 		if errors.IsNotFound(err) {
-			return reconcile.Result{}, nil
+			// Delete our target deployment if any
+			return r.delete(instance, targetName)
 		}
 		// Error reading the object - requeue the request.
 		return reconcile.Result{}, err
 	}
 
-	// Create or update our canary/target deployment
+	// Generate our target deployment spec
 	target, err := r.patchDeployment(instance, watchedSource)
 	if err != nil {
 		return reconcile.Result{}, err
@@ -212,7 +221,7 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 
 	// Create target/canary if needed
 	found := &appsv1.Deployment{}
-	err = r.Get(context.TODO(), types.NamespacedName{Name: target.Name, Namespace: target.Namespace}, found)
+	err = r.Get(context.TODO(), targetName, found)
 	if err != nil && errors.IsNotFound(err) {
 		return r.create(instance, target)
 	} else if err != nil {
@@ -220,7 +229,6 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 	}
 
 	// Update target/canary if needed
-
 	if !reflect.DeepEqual(target.Spec, found.Spec) {
 		found.Spec = target.Spec
 		return r.update(instance, found)
@@ -250,6 +258,44 @@ func (r *ReconcileBirdcage) update(instance *datadoghqv1alpha1.Birdcage, target 
 	}
 	log.Info("Updated canary deployment", "namespace", target.Namespace, "name", target.Name)
 	r.recorder.Eventf(instance, "Normal", "Updated", "updated deployment %s/%s", target.Namespace, target.Name)
+	return reconcile.Result{}, nil
+}
+
+func (r *ReconcileBirdcage) delete(instance *datadoghqv1alpha1.Birdcage, targetName types.NamespacedName) (reconcile.Result, error) {
+	log := logf.Log.WithName("reconcile")
+
+	found := &appsv1.Deployment{}
+	err := r.Get(context.TODO(), targetName, found)
+	if err != nil && errors.IsNotFound(err) {
+		return reconcile.Result{}, nil
+	} else if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	err = r.Delete(context.TODO(), found)
+	log.Info("Deleting canary", "namespace", targetName.Namespace, "name", targetName.Name)
+	r.recorder.Eventf(instance, "Normal", "Deleted", "deleted deployment %s", targetName.String())
+	return reconcile.Result{}, err
+}
+
+func (r *ReconcileBirdcage) finalize(instance *datadoghqv1alpha1.Birdcage) (reconcile.Result, error) {
+	log := logf.Log.WithName("reconcile")
+
+	// "You should implement the pre-delete logic in such a way
+	// that it is safe to invoke it multiple times for the same object.
+	if !containsString(instance.ObjectMeta.Finalizers, finalizerKey) {
+		return reconcile.Result{}, nil
+	}
+
+	log.Info("Deleting birdcage", "namespace", instance.GetNamespace(), "name", instance.GetName())
+	watchedSourceList.Remove(types.NamespacedName{Namespace: instance.GetNamespace(), Name: instance.GetName()})
+
+	// remove our finalizer from the list and update it.
+	instance.ObjectMeta.Finalizers = removeString(instance.ObjectMeta.Finalizers, finalizerKey)
+	if err := r.Update(context.Background(), instance); err != nil {
+		return reconcile.Result{Requeue: true}, nil
+	}
+
 	return reconcile.Result{}, nil
 }
 
@@ -320,4 +366,23 @@ func runLuaPatch(code string, rawInput string) (string, error) {
 	L.Pop(1)         // remove received value
 
 	return ret.String(), nil
+}
+
+func containsString(slice []string, s string) bool {
+	for _, item := range slice {
+		if item == s {
+			return true
+		}
+	}
+	return false
+}
+
+func removeString(slice []string, s string) (result []string) {
+	for _, item := range slice {
+		if item == s {
+			continue
+		}
+		result = append(result, item)
+	}
+	return
 }

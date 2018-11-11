@@ -17,6 +17,7 @@ limitations under the License.
 package birdcage
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -39,6 +40,7 @@ var (
 
 	sourceDepKey = types.NamespacedName{Name: "bar", Namespace: "default"}
 	targetDepKey = types.NamespacedName{Name: "bar-canary", Namespace: "default"}
+	tCopyDepKey  = types.NamespacedName{Name: "canary-dup", Namespace: "default"}
 
 	sourceDeployment = &appsv1.Deployment{
 		ObjectMeta: metav1.ObjectMeta{
@@ -106,6 +108,11 @@ func TestReconcile(t *testing.T) {
 		mgrStopped.Wait()
 	}()
 
+	// Prepare a birdcage twin
+	newb := instance.DeepCopy()
+	newb.SetName(newb.Name + "-dup")
+	newb.Spec.TargetObject.Name = tCopyDepKey.Name
+
 	// Create the source (watched) deployment
 	err = c.Create(context.TODO(), sourceDeployment)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -131,6 +138,28 @@ func TestReconcile(t *testing.T) {
 	g.Eventually(func() error { return c.Get(context.TODO(), targetDepKey, newdep) }, timeout).
 		Should(gomega.Succeed())
 
+	// Source deployment modifications should propagate to canary
+	sourceDeployment.Spec.MinReadySeconds = 42
+	err = c.Update(context.TODO(), sourceDeployment)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Eventually(requests, timeout).Should(gomega.Receive(gomega.Equal(expectedRequest)))
+	g.Eventually(func() error {
+		err := c.Get(context.TODO(), targetDepKey, dep)
+		if err == nil && dep.Spec.MinReadySeconds == sourceDeployment.Spec.MinReadySeconds {
+			return nil
+		}
+		return fmt.Errorf("Modification did not propatage")
+	}, timeout).Should(gomega.Succeed())
+
+	// Create a new Birdcage object watching the same source object
+	err = c.Create(context.TODO(), newb)
+	g.Expect(err).NotTo(gomega.HaveOccurred())
+	g.Eventually(requests, timeout).Should(gomega.Receive(gomega.Equal(expectedRequest)))
+	ndep := &appsv1.Deployment{}
+	g.Eventually(func() error { return c.Get(context.TODO(), tCopyDepKey, ndep) }, timeout).
+		Should(gomega.Succeed())
+	c.Delete(context.TODO(), newb)
+
 	// Deleted birdcage custom resource should propagate
 	err = c.Delete(context.TODO(), instance)
 	g.Expect(err).NotTo(gomega.HaveOccurred())
@@ -138,4 +167,6 @@ func TestReconcile(t *testing.T) {
 
 	// Manually delete Deployment since GC isn't enabled in the test control plane
 	g.Expect(c.Delete(context.TODO(), sourceDeployment)).To(gomega.Succeed())
+	g.Expect(c.Delete(context.TODO(), dep)).To(gomega.Succeed())
+	g.Expect(c.Delete(context.TODO(), ndep)).To(gomega.Succeed())
 }
