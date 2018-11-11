@@ -96,7 +96,6 @@ var (
 
 // Add creates a new Birdcage Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
-// USER ACTION REQUIRED: update cmd/manager/main.go to call this datadoghq.Add(mgr) to install this Controller
 func Add(mgr manager.Manager) error {
 	return add(mgr, newReconciler(mgr))
 }
@@ -220,11 +219,6 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
-	if found.GetNamespace() == "" || found.GetName() == "" {
-		// object still being created
-		return reconcile.Result{}, nil
-	}
-
 	// Update target/canary if needed
 
 	if !reflect.DeepEqual(target.Spec, found.Spec) {
@@ -251,7 +245,7 @@ func (r *ReconcileBirdcage) update(instance *datadoghqv1alpha1.Birdcage, target 
 	log := logf.Log.WithName("reconcile")
 	err := r.Update(context.TODO(), target)
 	if err != nil {
-		log.Error(err, "updating deployment", "namespace", target.Namespace, "name", target.Name)
+		log.Error(err, "updating canary deployment", "namespace", target.Namespace, "name", target.Name)
 		return reconcile.Result{}, err
 	}
 	log.Info("Updated canary deployment", "namespace", target.Namespace, "name", target.Name)
@@ -289,6 +283,9 @@ func (r *ReconcileBirdcage) patchDeployment(birdcage *datadoghqv1alpha1.Birdcage
 	if err := controllerutil.SetControllerReference(birdcage, obj, r.scheme); err != nil {
 		return nil, err
 	}
+
+	// XXX FIXME - this is ugly (but fixes all spurious updates and conflicts on update we have)
+	obj.Spec.Template.Spec.SecurityContext = source.Spec.Template.Spec.SecurityContext.DeepCopy()
 
 	return obj, nil
 }
