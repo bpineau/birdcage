@@ -25,6 +25,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 )
 
+const luaCode = `function patch(d)
+        d.spec.replicas = 0
+        return d
+end
+`
+
 func TestStorageBirdcage(t *testing.T) {
 	key := types.NamespacedName{
 		Name:      "foo",
@@ -43,6 +49,7 @@ func TestStorageBirdcage(t *testing.T) {
 			TargetObject: BirdcageTargetObject{
 				Name:      "foo-canary",
 				Namespace: "default",
+				LuaCode:   luaCode,
 			},
 		},
 	}
@@ -55,9 +62,17 @@ func TestStorageBirdcage(t *testing.T) {
 	g.Expect(c.Get(context.TODO(), key, fetched)).NotTo(gomega.HaveOccurred())
 	g.Expect(fetched).To(gomega.Equal(created))
 
-	// Test Updating the Labels
+	// Test Updating the labels
 	updated := fetched.DeepCopy()
 	updated.Labels = map[string]string{"hello": "world"}
+	g.Expect(c.Update(context.TODO(), updated)).NotTo(gomega.HaveOccurred())
+
+	g.Expect(c.Get(context.TODO(), key, fetched)).NotTo(gomega.HaveOccurred())
+	g.Expect(fetched).To(gomega.Equal(updated))
+
+	// Test Updating the lua code
+	updated = fetched.DeepCopy()
+	updated.Spec.TargetObject.LuaCode = "some string"
 	g.Expect(c.Update(context.TODO(), updated)).NotTo(gomega.HaveOccurred())
 
 	g.Expect(c.Get(context.TODO(), key, fetched)).NotTo(gomega.HaveOccurred())

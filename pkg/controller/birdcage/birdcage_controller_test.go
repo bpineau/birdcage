@@ -75,7 +75,6 @@ var (
 			TargetObject: datadoghqv1alpha1.BirdcageTargetObject{
 				Name:      "bar-canary",
 				Namespace: "default",
-				Labels:    map[string]string{"a": "b"},
 				LuaCode: `
 function patch(d)
 	d.spec.replicas = 0
