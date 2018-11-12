@@ -26,8 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/serializer/json"
 
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
-	luajson "github.com/bpineau/birdcage/pkg/lua-json"
 	"github.com/bpineau/birdcage/pkg/watchlist"
+	luajson "layeh.com/gopher-json"
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
