@@ -781,6 +781,14 @@
   revision = "a9a16210091c9a2b6a937e06a182955c03654c4c"
 
 [[projects]]
+  branch = "master"
+  digest = "1:8d3242044f959b6a5d566ff39f7834cd557c300cebbc20211c417fb20fa38fd1"
+  name = "layeh.com/gopher-json"
+  packages = ["."]
+  pruneopts = "T"
+  revision = "d0a7d8b4c69aea3341d0131a64b59a6df9759be2"
+
+[[projects]]
   digest = "1:ca3f51201a90f3a23bf35938ee910d2fb3095ece453cf56c8b723e935c194ebd"
   name = "sigs.k8s.io/controller-runtime"
   packages = [
@@ -869,6 +877,7 @@
     "k8s.io/client-go/tools/record",
     "k8s.io/code-generator/cmd/client-gen",
     "k8s.io/code-generator/cmd/deepcopy-gen",
+    "layeh.com/gopher-json",
     "sigs.k8s.io/controller-runtime/pkg/client",
     "sigs.k8s.io/controller-runtime/pkg/client/config",
     "sigs.k8s.io/controller-runtime/pkg/controller",
