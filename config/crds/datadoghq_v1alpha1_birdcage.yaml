@@ -54,6 +54,29 @@ spec:
           - targetObject
           type: object
         status:
+          properties:
+            phase:
+              type: string
+            sourceref:
+              properties:
+                name:
+                  type: string
+                namespace:
+                  type: string
+              required:
+              - name
+              - namespace
+              type: object
+            targetref:
+              properties:
+                name:
+                  type: string
+                namespace:
+                  type: string
+              required:
+              - name
+              - namespace
+              type: object
           type: object
   version: v1alpha1
 status:
