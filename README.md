@@ -1,8 +1,10 @@
 # birdcage
 
-**birdcage** automaticaly creates and maintain "canary" deployments from existing deployments.
+**birdcage** automaticaly creates and maintain deployments copies (ie. canaries) from existing deployments.
 
-It supports applying arbitrary transformation over the new/generated deployment, for instance to:
+WARNING: this is an experimental project.
+
+It supports applying arbitrary transformation from the model deployment to the new/generated deployment, for instance to:
 * Change replicas number
 * Change labels and selectors (so you canary is served from a distinct service)
 * Change configmap name to configure your canary differently
@@ -16,8 +18,8 @@ apiVersion: datadoghq.datadoghq.com/v1alpha1
 kind: Birdcage
 metadata:
   labels:
-    app: birdcage-sample
-  name: birdcage-sample
+    app: birdcage-example
+  name: birdcage-example
 spec:
 
   # source is the original deployment we're watching
@@ -30,13 +32,13 @@ spec:
     name: mydeploy-canary
     namespace: default
 
-    # luaCode allows us to adapt "source" deployment attribute before using it as a canary ("target") deployment 
+    # luaCode describe what we want to change in the canary/target deployment
     luaCode: |
         function patch(d)
           -- We only want one canary pod
           d.spec.replicas = 1
 
-          -- Change canary's "app" label to "mydeploy-canary" (ie. to keep it out of service's selectors)
+          -- Change canary's "app" label to "mydeploy-canary"
           d.metadata.labels.app = d.metadata.name
           d.spec.selector.matchLabels.app = d.metadata.name
           d.spec.template.metadata.labels.app = d.metadata.name

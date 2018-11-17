@@ -346,9 +346,27 @@ end
 `
 
 func runLuaPatch(code string, rawInput string) (string, error) {
-	L := lua.NewState()
-	L.PreloadModule("json", luajson.Loader)
+	L := lua.NewState(lua.Options{SkipOpenLibs: true})
 	defer L.Close()
+
+	// only enable the minimum requiered base modules (no syscalls etc)
+	for _, pair := range []struct {
+		n string
+		f lua.LGFunction
+	}{
+		{lua.LoadLibName, lua.OpenPackage}, // Must be first
+		{lua.BaseLibName, lua.OpenBase},
+		{lua.TabLibName, lua.OpenTable},
+	} {
+		if err := L.CallByParam(lua.P{
+			Fn:      L.NewFunction(pair.f),
+			NRet:    0,
+			Protect: true,
+		}, lua.LString(pair.n)); err != nil {
+			panic(err)
+		}
+	}
+	L.PreloadModule("json", luajson.Loader)
 
 	err := L.DoString(luaStub + code)
 	if err != nil {
