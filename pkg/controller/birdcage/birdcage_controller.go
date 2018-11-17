@@ -28,6 +28,7 @@ import (
 	datadoghqv1alpha1 "github.com/bpineau/birdcage/pkg/apis/datadoghq/v1alpha1"
 	"github.com/bpineau/birdcage/pkg/watchlist"
 	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -46,7 +47,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/source"
 )
 
-const finalizerKey = "finalizer.birdcage.datadoghq.com"
+const (
+	finalizerKey         = "finalizer.birdcage.datadoghq.com"
+	annotationSrcKey     = "birdcage.datadoghq.com/source"
+	annotationBircageKey = "birdcage.datadoghq.com/birdcage"
+)
 
 var (
 	watchedSourceList = watchlist.New()
@@ -94,6 +99,8 @@ var (
 			return result
 		})
 )
+
+var _ reconcile.Reconciler = &ReconcileBirdcage{}
 
 // Add creates a new Birdcage Controller and adds it to the Manager with default RBAC. The Manager will set fields on the Controller
 // and Start it when the Manager is Started.
@@ -148,8 +155,6 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	return nil
 }
-
-var _ reconcile.Reconciler = &ReconcileBirdcage{}
 
 // ReconcileBirdcage reconciles a Birdcage object
 type ReconcileBirdcage struct {
@@ -219,6 +224,13 @@ func (r *ReconcileBirdcage) Reconcile(request reconcile.Request) (reconcile.Resu
 		return reconcile.Result{}, err
 	}
 
+	// Delete old target if source or dest deployment name changed in spec
+	if r.objectsRefChanged(instance) {
+		if res, err := r.delete(instance, r.toNspName(&instance.Status.TargetRef)); err != nil {
+			return res, err
+		}
+	}
+
 	// Create target/canary if needed
 	found := &appsv1.Deployment{}
 	err = r.Get(context.TODO(), targetName, found)
@@ -246,6 +258,22 @@ func (r *ReconcileBirdcage) create(instance *datadoghqv1alpha1.Birdcage, target 
 	}
 	log.Info("Created canary deployment", "namespace", target.Namespace, "name", target.Name)
 	r.recorder.Eventf(instance, "Normal", "Created", "created deployment %s/%s", target.Namespace, target.Name)
+
+	instance.Status.Phase = "Created"
+	instance.Status.SourceRef = datadoghqv1alpha1.BirdcageObjectRef{
+		Name:      instance.Spec.SourceObject.Name,
+		Namespace: instance.Spec.SourceObject.Namespace,
+	}
+	instance.Status.TargetRef = datadoghqv1alpha1.BirdcageObjectRef{
+		Name:      instance.Spec.TargetObject.Name,
+		Namespace: instance.Spec.TargetObject.Namespace,
+	}
+
+	err = r.Update(context.TODO(), instance)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
 	return reconcile.Result{}, nil
 }
 
@@ -266,16 +294,27 @@ func (r *ReconcileBirdcage) delete(instance *datadoghqv1alpha1.Birdcage, targetN
 
 	found := &appsv1.Deployment{}
 	err := r.Get(context.TODO(), targetName, found)
-	if err != nil && errors.IsNotFound(err) {
-		return reconcile.Result{}, nil
-	} else if err != nil {
+	if err == nil {
+		log.Info("Deleting canary", "namespace", targetName.Namespace, "name", targetName.Name)
+		err = r.Delete(context.TODO(), found)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		r.recorder.Eventf(instance, "Normal", "Deleted", "deleted deployment %s", targetName.String())
+	} else if err != nil && !errors.IsNotFound(err) {
 		return reconcile.Result{}, err
 	}
 
-	err = r.Delete(context.TODO(), found)
-	log.Info("Deleting canary", "namespace", targetName.Namespace, "name", targetName.Name)
-	r.recorder.Eventf(instance, "Normal", "Deleted", "deleted deployment %s", targetName.String())
-	return reconcile.Result{}, err
+	instance.Status.Phase = ""
+	instance.Status.SourceRef = datadoghqv1alpha1.BirdcageObjectRef{}
+	instance.Status.TargetRef = datadoghqv1alpha1.BirdcageObjectRef{}
+
+	err = r.Update(context.TODO(), instance)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	return reconcile.Result{}, nil
 }
 
 func (r *ReconcileBirdcage) finalize(instance *datadoghqv1alpha1.Birdcage) (reconcile.Result, error) {
@@ -297,6 +336,32 @@ func (r *ReconcileBirdcage) finalize(instance *datadoghqv1alpha1.Birdcage) (reco
 	}
 
 	return reconcile.Result{}, nil
+}
+
+func (r *ReconcileBirdcage) objectsRefChanged(instance *datadoghqv1alpha1.Birdcage) bool {
+	if instance.Status.Phase != "Created" {
+		return false
+	}
+
+	sourceRef := datadoghqv1alpha1.BirdcageObjectRef{
+		Name:      instance.Spec.SourceObject.Name,
+		Namespace: instance.Spec.SourceObject.Namespace,
+	}
+
+	targetRef := datadoghqv1alpha1.BirdcageObjectRef{
+		Name:      instance.Spec.TargetObject.Name,
+		Namespace: instance.Spec.TargetObject.Namespace,
+	}
+
+	return !reflect.DeepEqual(instance.Status.SourceRef, sourceRef) ||
+		!reflect.DeepEqual(instance.Status.TargetRef, targetRef)
+}
+
+func (r *ReconcileBirdcage) toNspName(ref *datadoghqv1alpha1.BirdcageObjectRef) types.NamespacedName {
+	return types.NamespacedName{
+		Name:      ref.Name,
+		Namespace: ref.Namespace,
+	}
 }
 
 func (r *ReconcileBirdcage) patchDeployment(birdcage *datadoghqv1alpha1.Birdcage, source *appsv1.Deployment) (*appsv1.Deployment, error) {
@@ -325,13 +390,20 @@ func (r *ReconcileBirdcage) patchDeployment(birdcage *datadoghqv1alpha1.Birdcage
 		return nil, err
 	}
 
+	annotations := make(map[string]string)
+	annotations[annotationSrcKey] = fmt.Sprintf("%s/%s", birdcage.Spec.SourceObject.Namespace, birdcage.Spec.SourceObject.Name)
+	annotations[annotationBircageKey] = fmt.Sprintf("%s/%s", birdcage.Namespace, birdcage.Name)
+	obj.SetAnnotations(annotations)
+
 	// Target deployment is owned by our birdcage object
 	if err := controllerutil.SetControllerReference(birdcage, obj, r.scheme); err != nil {
 		return nil, err
 	}
 
-	// XXX FIXME - this is ugly (but fixes all spurious updates and conflicts on update we have)
-	obj.Spec.Template.Spec.SecurityContext = source.Spec.Template.Spec.SecurityContext.DeepCopy()
+	// Lua unserialize this empty map to nil pointer
+	if obj.Spec.Template.Spec.SecurityContext == nil {
+		obj.Spec.Template.Spec.SecurityContext = new(v1.PodSecurityContext)
+	}
 
 	return obj, nil
 }

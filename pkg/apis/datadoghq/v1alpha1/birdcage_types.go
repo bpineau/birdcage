@@ -20,9 +20,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 type BirdcageSourceObject struct {
 	// +kubebuilder:validation:MinLength=1
 	Name string `json:"name"`
@@ -40,16 +37,20 @@ type BirdcageTargetObject struct {
 
 // BirdcageSpec defines the desired state of Birdcage
 type BirdcageSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
 	SourceObject BirdcageSourceObject `json:"sourceObject"`
 	TargetObject BirdcageTargetObject `json:"targetObject"`
 }
 
+type BirdcageObjectRef struct {
+	Name      string `json:"name"`
+	Namespace string `json:"namespace"`
+}
+
 // BirdcageStatus defines the observed state of Birdcage
 type BirdcageStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "make" to regenerate code after modifying this file
+	Phase     string            `json:"phase,omitempty"`
+	SourceRef BirdcageObjectRef `json:"sourceref,omitempty"`
+	TargetRef BirdcageObjectRef `json:"targetref,omitempty"`
 }
 
 // +genclient
